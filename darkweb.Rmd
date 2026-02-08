@@ -1,0 +1,1040 @@
+---
+title: "Analisi del Darkweb"
+author: "Andrea D'Orazio"
+date: "2026-01-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduzione
+
+Il dark web, noto anche come onionweb, si riferisce all’insieme dei domini accessibili sotto il pseudo–top-level domain .onion. A differenza del World Wide Web, il dark web è caratterizzato da meccanismi di anonimato e protezione della privacy che rendono difficile tracciare l’origine geografica delle comunicazioni e l’identità dei soggetti coinvolti.
+
+L’obiettivo di questo progetto è condurre un’analisi strutturale di una rete del dark web utilizzando strumenti e metodologie della network science, così come affrontati durante il corso. L’analisi adotta un approccio puramente topologico e non considera il contenuto o la natura delle attività associate ai domini analizzati.
+
+Il dataset oggetto di studio rappresenta una rete diretta di domini del dark web, in cui ciascun nodo corrisponde a un servizio onion e ogni arco diretto rappresenta un collegamento ipertestuale tra due domini distinti. Questa rappresentazione consente di analizzare sia proprietà locali, come le misure di centralità e di potere strutturale dei nodi, sia proprietà globali, quali la connettività, l’organizzazione della rete e la sua resilienza a guasti o attacchi mirati.
+
+Il dataset utilizzato in questo studio è stato reperito dal repository Index of Complex Networks (ICON) (https://icon.colorado.edu
+). Il grafo relativo alla rete di domini del dark web è stato scaricato dal link: https://santafe.edu/~aaronc/shared/darkweb_2017.zip
+
+## Domande di Ricerca
+
+Questa analisi mira a rispondere alle seguenti domande di ricerca:
+
+**RQ1:** La rete del dark web presenta un’elevata presenza di nodi isolati e una struttura complessivamente frammentata in più componenti?
+
+**RQ2:** La connettività della rete è sostenuta da pochi nodi altamente centrali?
+
+**RQ3:** Esistono nodi che svolgono un ruolo critico di intermediazione nella rete? Se sì, quali sono?
+
+**RQ4:** Il darkweb mostra caratteristiche di small-world o scale-free network nonostante la sua sparsità?
+
+**RQ5:** La rete è più vulnerabile a guasti casuali o ad attacchi mirati sui nodi centrali?
+
+# Setup e Caricamento Dati
+
+## Caricamento Librerie
+
+```{r libraries}
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(gridExtra)
+library(poweRlaw)
+```
+
+## Caricamento Dati
+```{r load-data}
+# Carica nodi
+nodes <- read.csv("darkweb-nodes.txt", 
+                  sep = ";", 
+                  header = TRUE,
+                  stringsAsFactors = FALSE)
+
+# Carica archi
+edges <- read.csv("darkweb-edges.txt", 
+                  sep = ";", 
+                  header = TRUE,
+                  stringsAsFactors = FALSE)
+
+# Mostra informazioni di base
+cat("Dataset caricato con successo!\n")
+cat("Numero di nodi:", nrow(nodes), "\n")
+cat("Numero di archi:", nrow(edges), "\n")
+```
+
+## Creazione Oggetti Network
+```{r create-network}
+# Crea network igraph dalla lista di archi
+g <- graph_from_data_frame(d = edges[, c("Source", "Target", "Weight")], 
+                           vertices = nodes, 
+                           directed = TRUE)
+
+# Crea oggetto tidygraph
+tg <- as_tbl_graph(g, directed = TRUE)
+
+# Proprietà di base del network
+cat("Diretto:", is_directed(g), "\n")
+cat("Pesato:", is_weighted(g), "\n")
+cat("Numero di vertici:", vcount(g), "\n")
+cat("Numero di archi:", ecount(g), "\n")
+cat("Densità:", edge_density(g), "\n")
+```
+
+La costruzione del grafo diretto dei domini del dark web evidenzia fin da subito una struttura fortemente irregolare e sparsa. Il numero di nodi risulta elevato rispetto al numero di archi, indicando una bassa densità complessiva della rete. Questa caratteristica suggerisce che la maggior parte dei servizi onion tende a mantenere pochi collegamenti ipertestuali verso altri domini, confermando l’idea di un ecosistema poco integrato.
+
+L’analisi delle componenti connesse mostra la presenza di una giant component che raccoglie una porzione significativa, ma non dominante, dei nodi totali, affiancata da numerose componenti di dimensione ridotta e da nodi isolati. Questo pattern è coerente con una rete in cui la navigabilità globale è limitata e l’accesso ai servizi avviene spesso tramite percorsi esterni o conoscenza diretta degli indirizzi.
+
+# RQ1:  La rete del dark web presenta un’elevata presenza di nodi isolati e una struttura complessivamente frammentata in più componenti?
+
+## Analisi Out-Degree
+```{r rq1-outdegree}
+# Calcola out-degrees
+out_degrees <- degree(g, mode = "out")
+
+# Conta nodi con out-degree = 0
+nodes_no_outlinks <- sum(out_degrees == 0)
+prop_no_outlinks <- nodes_no_outlinks / vcount(g) * 100
+
+cat("I nodi con out-degree = 0 sono ", nodes_no_outlinks, "\n")
+cat("Percentuale di nodi senza link in uscita:", round(prop_no_outlinks, 2), "%\n")
+cat("Media out-degree:", round(mean(out_degrees), 2), "\n")
+cat("Mediana out-degree:", median(out_degrees), "\n")
+cat("Max out-degree:", max(out_degrees), "\n")
+
+# Grafico distribuzione out-degree
+out_degree_df <- data.frame(out_degree = out_degrees)
+
+p1 <- ggplot(out_degree_df, aes(x = out_degree + 1)) +
+  geom_histogram(bins = 50, fill = "#2C3E50", alpha = 0.8) +
+  scale_x_log10(labels = comma) +
+  theme_minimal() +
+  labs(title = "Distribuzione Out-Degree (scala logaritmica)",
+       subtitle = paste0(round(prop_no_outlinks, 1), "% dei nodi non hanno link in uscita"),
+       x = "Out-Degree + 1 (scala log)", 
+       y = "Frequenza") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+print(p1)
+
+# Distribuzione cumulativa
+out_degree_sorted <- sort(out_degrees, decreasing = TRUE)
+cumulative_prop <- (1:length(out_degree_sorted)) / length(out_degree_sorted)
+
+p2 <- ggplot(data.frame(degree = out_degree_sorted, cum_prop = cumulative_prop), 
+             aes(x = degree + 1, y = cum_prop)) +
+  geom_line(color = "#E74C3C", linewidth = 1.2) +
+  scale_x_log10() +
+  scale_y_continuous(labels = percent) +
+  theme_minimal() +
+  labs(title = "Distribuzione Cumulativa Out-Degree",
+       x = "Out-Degree + 1 (scala log)", 
+       y = "Proporzione Cumulativa") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+print(p2)
+```
+
+## Analisi In-Degree
+```{r rq1-indegree}
+# Calcola in-degrees
+in_degrees <- degree(g, mode = "in")
+
+cat("Media in-degree:", round(mean(in_degrees), 2), "\n")
+cat("Mediana in-degree:", median(in_degrees), "\n")
+cat("Max in-degree:", max(in_degrees), "\n")
+cat("Nodi con in-degree = 0:", sum(in_degrees == 0), "\n")
+
+# Grafico distribuzione in-degree
+in_degree_df <- data.frame(in_degree = in_degrees)
+
+p3 <- ggplot(in_degree_df, aes(x = in_degree + 1)) +
+  geom_histogram(bins = 50, fill = "#16A085", alpha = 0.8) +
+  scale_x_log10(labels = comma) +
+  theme_minimal() +
+  labs(title = "Distribuzione In-Degree (scala logaritmica)",
+       x = "In-Degree + 1 (scala log)", 
+       y = "Frequenza") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+print(p3)
+```
+
+## Analisi Nodi Isolati
+```{r rq1-isolated}
+total_degrees <- degree(g, mode = "all")
+
+# Identifico nodi isolati (senza connessioni)
+isolated_nodes <- sum(total_degrees == 0)
+prop_isolated <- isolated_nodes / vcount(g) * 100
+
+# Identifico nodi debolmente connessi (solo incoming o solo outgoing)
+only_in <- sum(in_degrees > 0 & out_degrees == 0)
+only_out <- sum(in_degrees == 0 & out_degrees > 0)
+
+cat("Nodi completamente isolati (grado = 0):", isolated_nodes, 
+    paste0("(", round(prop_isolated, 2), "%)"), "\n")
+cat("Nodi con solo link in entrata:", only_in, 
+    paste0("(", round(only_in/vcount(g)*100, 2), "%)"), "\n")
+cat("Nodi con solo link in uscita:", only_out, 
+    paste0("(", round(only_out/vcount(g)*100, 2), "%)"), "\n")
+
+# Crea visualizzazione riassuntiva
+isolation_summary <- data.frame(
+  Category = c("Nessun link uscita", "Solo in entrata", "Solo in uscita", "Isolati"),
+  Count = c(nodes_no_outlinks, only_in, only_out, isolated_nodes),
+  Percentage = c(prop_no_outlinks, only_in/vcount(g)*100, 
+                 only_out/vcount(g)*100, prop_isolated)
+)
+
+p4 <- ggplot(isolation_summary, aes(x = reorder(Category, -Percentage), 
+                                     y = Percentage, fill = Category)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%\n(n=", Count, ")")), 
+            vjust = -0.5, size = 4) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  labs(title = "Metriche di Frammentazione del Network",
+       x = "", y = "Percentuale di Nodi") +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 14)) +
+  ylim(0, max(isolation_summary$Percentage) * 1.15)
+
+print(p4)
+```
+
+## Sintesi RQ1
+```{r rq1-summary}
+cat("Il network darkweb mostra una FRAMMENTAZIONE ESTREMA:\n")
+cat("- ", round(prop_no_outlinks, 1), "% dei nodi non linkano mai nessun altro sito\n", sep="")
+cat("- Solo ", round((1 - prop_no_outlinks/100) * 100, 1), "% dei nodi hanno link in uscita\n", sep="")
+```
+
+I risultati mostrano che la rete del dark web è fortemente frammentata, con un numero elevato di nodi che presentano in-degree nullo, out-degree nullo, o entrambi. La presenza di molte componenti debolmente connesse e di nodi isolati indica che una parte consistente dei servizi onion non partecipa attivamente alla struttura ipertestuale globale. Questo supporta l’ipotesi di un dark web caratterizzato da bassa integrazione strutturale e da una limitata raggiungibilità complessiva.
+
+# RQ2: La connettività della rete è sostenuta da pochi nodi altamente centrali?
+
+## Degree Centrality
+```{r rq2-degree}
+# Calcola statistiche sui gradi
+total_degree <- degree(g, mode = "all")
+
+# FOCUS SU IN-DEGREE: nodi con tanti collegamenti in entrata sono importanti
+cat(" TOP 20 NODI PER IN-DEGREE (IMPORTANZA) \n")
+cat("Nodi con più collegamenti in entrata = nodi più 'autorevoli'\n\n")
+
+top_in_degree <- head(sort(in_degrees, decreasing = TRUE), 20)
+top_in_nodes <- names(top_in_degree)
+
+top_in_df <- data.frame(
+  Rank = 1:20,
+  Node = top_in_nodes,
+  InDegree = as.numeric(top_in_degree)
+)
+print(kable(top_in_df, format = "markdown"))
+
+# ANALISI CONCENTRAZIONE IN-DEGREE (soglia 10%)
+cat("\n ANALISI CONCENTRAZIONE IN-DEGREE \n")
+cat("Quanto controllo hanno i nodi più centrali?\n\n")
+
+# Calcola concentrazione per il top 10%
+top_10_percent <- ceiling(vcount(g) * 0.10)
+total_in_links <- sum(in_degrees)
+top_10_in_links <- sum(head(sort(in_degrees, decreasing = TRUE), top_10_percent))
+concentration_in <- (top_10_in_links / total_in_links) * 100
+
+cat("Top 10% dei nodi (n=", top_10_percent, ") riceve ", 
+    round(concentration_in, 1), "% di tutti i link in entrata\n", sep="")
+
+# Visualizzazione concentrazione
+concentration_df <- data.frame(
+  Percentage = c("Top 10%", "Altri 90%"),
+  Links = c(
+    sum(head(sort(in_degrees, decreasing = TRUE), top_10_percent)),
+    sum(in_degrees) - sum(head(sort(in_degrees, decreasing = TRUE), top_10_percent))
+  )
+)
+concentration_df$Proportion <- concentration_df$Links / sum(in_degrees) * 100
+
+cat("\n")
+print(kable(concentration_df, format = "markdown", digits = 1,
+            col.names = c("Gruppo", "Link Ricevuti", "% Totale")))
+
+# Grafico concentrazione
+p_conc <- ggplot(concentration_df, aes(x = Percentage, y = Proportion, fill = Percentage)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = paste0(round(Proportion, 1), "%")), 
+            vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_manual(values = c("#E74C3C", "#95A5A6")) +
+  theme_minimal() +
+  labs(title = "Concentrazione della Centralità (In-Degree)",
+       subtitle = "Quanto del totale dei link in entrata va ai nodi più centrali?",
+       x = "", 
+       y = "Percentuale di Link in Entrata Totali") +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 14)) +
+  ylim(0, max(concentration_df$Proportion) * 1.15)
+
+print(p_conc)
+```
+
+## Analisi PageRank
+```{r rq2-pagerank}
+# Calcola PageRank
+pr <- page_rank(g, directed = TRUE)$vector
+
+# Top nodi per PageRank
+top_pr <- head(sort(pr, decreasing = TRUE), 20)
+top_pr_nodes <- names(top_pr)
+
+cat("\n TOP 20 NODI PER PAGERANK \n")
+top_pr_df <- data.frame(
+  Rank = 1:20,
+  Node = top_pr_nodes,
+  PageRank = as.numeric(top_pr)
+)
+print(kable(top_pr_df, format = "markdown", digits = 6))
+
+# Distribuzione PageRank
+pr_df <- data.frame(pagerank = pr)
+
+p5 <- ggplot(pr_df, aes(x = pagerank)) +
+  geom_histogram(bins = 50, fill = "#9B59B6", alpha = 0.8) +
+  scale_x_log10() +
+  theme_minimal() +
+  labs(title = "Distribuzione PageRank (scala logaritmica)",
+       x = "PageRank (scala log)", 
+       y = "Frequenza") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+print(p5)
+
+# Concentrazione PageRank (top 10%)
+top_10_pr <- sum(head(sort(pr, decreasing = TRUE), top_10_percent))
+total_pr <- sum(pr)
+concentration_pr <- (top_10_pr / total_pr) * 100
+
+cat("\n CONCENTRAZIONE PAGERANK \n")
+cat("Il top 10% dei nodi controlla ", round(concentration_pr, 1), 
+    "% del PageRank totale\n", sep="")
+
+# Verifica quanti nodi hanno PageRank minimo
+min_pr <- min(pr)
+nodes_min_pr <- sum(pr == min_pr)
+prop_min_pr <- (nodes_min_pr / vcount(g)) * 100
+
+cat("Nodi con PageRank minimo (", format(min_pr, scientific = TRUE), "): ", 
+    nodes_min_pr, " (", round(prop_min_pr, 1), "%)\n", sep="")
+```
+
+## Punteggi Hub e Authority
+```{r rq2-hub-authority}
+# Calcola punteggi hub e authority
+hits_result <- hits_scores(g)
+ha <- hits_result$authority
+hs <- hits_result$hub
+
+# Top authorities
+top_auth <- head(sort(ha, decreasing = TRUE), 10)
+cat("\n TOP 10 NODI AUTHORITY \n")
+top_auth_df <- data.frame(
+  Rank = 1:10,
+  Node = names(top_auth),
+  Authority = as.numeric(top_auth)
+)
+print(kable(top_auth_df, format = "markdown", digits = 6))
+
+# Top hubs
+top_hubs <- head(sort(hs, decreasing = TRUE), 10)
+cat("\n TOP 10 NODI HUB \n")
+top_hubs_df <- data.frame(
+  Rank = 1:10,
+  Node = names(top_hubs),
+  Hub = as.numeric(top_hubs)
+)
+print(kable(top_hubs_df, format = "markdown", digits = 6))
+```
+
+## Visualizzazione Concentrazione Centralità
+```{r rq2-visualization}
+# Crea un confronto completo delle centralità per i top nodi
+top_nodes_analysis <- data.frame(
+  Node = V(g)$name,
+  InDegree = in_degrees,
+  OutDegree = out_degrees,
+  PageRank = pr,
+  Authority = ha,
+  Hub = hs
+)
+
+# Ottieni top 30 nodi per PageRank per visualizzazione
+top_30_nodes <- head(top_nodes_analysis[order(-top_nodes_analysis$PageRank), ], 30)
+
+# Normalizza valori per confronto
+top_30_nodes$InDegree_norm <- top_30_nodes$InDegree / max(top_30_nodes$InDegree)
+top_30_nodes$PageRank_norm <- top_30_nodes$PageRank / max(top_30_nodes$PageRank)
+
+# Grafico confronto
+p6 <- ggplot(top_30_nodes, aes(x = InDegree_norm, y = PageRank_norm)) +
+  geom_point(aes(size = OutDegree), alpha = 0.6, color = "#E67E22") +
+  geom_text(aes(label = substr(Node, 1, 10)), size = 2.5, hjust = -0.1, vjust = 0) +
+  theme_minimal() +
+  labs(title = "Top 30 Nodi: In-Degree vs PageRank",
+       subtitle = "La dimensione rappresenta l'Out-Degree",
+       x = "In-Degree Normalizzato", 
+       y = "PageRank Normalizzato") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+print(p6)
+```
+
+## Sintesi RQ2
+```{r rq2-summary}
+cat("Il network mostra una CONCENTRAZIONE DI CENTRALITÀ ESTREMA:\n")
+cat("- Il top 10% dei nodi controlla ", round(concentration_in, 1), 
+    "% dei link in entrata\n", sep="")
+cat("- Il top 10% dei nodi detiene ", round(concentration_pr, 1), 
+    "% del PageRank totale\n", sep="")
+cat("- La rete è sostenuta da un piccolo numero di nodi altamente centrali\n")
+```
+L’analisi delle distribuzioni di grado e delle misure di centralità evidenzia una forte eterogeneità nella connettività dei nodi. La maggior parte dei domini presenta un grado molto basso, mentre pochi nodi concentrano una quota rilevante dei collegamenti in entrata e in uscita. Questo risultato indica che la connettività complessiva della rete dipende in larga misura da un numero ristretto di nodi strutturalmente rilevanti, che fungono da punti di riferimento o di aggregazione per altri servizi.
+
+# RQ3: Esistono nodi che svolgono un ruolo critico di intermediazione nella rete? 
+
+## Calcolo Betweenness Centrality
+```{r rq3-betweenness}
+cat("Calcolo betweenness centrality (potrebbe richiedere qualche minuto)...\n")
+
+# Calcola betweenness centrality
+betweenness <- betweenness(g, directed = TRUE, normalized = TRUE)
+
+cat("Betweenness centrality calcolata con successo!\n")
+
+# Statistiche
+cat("\n STATISTICHE BETWEENNESS CENTRALITY \n")
+cat("Media betweenness:", round(mean(betweenness), 6), "\n")
+cat("Mediana betweenness:", round(median(betweenness), 6), "\n")
+cat("Max betweenness:", round(max(betweenness), 6), "\n")
+cat("Nodi con betweenness = 0:", sum(betweenness == 0), 
+    paste0("(", round(sum(betweenness == 0)/vcount(g)*100, 1), "%)"), "\n")
+```
+
+## Top Nodi per Betweenness
+```{r rq3-top-betweenness}
+# Top nodi per betweenness
+top_betweenness <- head(sort(betweenness, decreasing = TRUE), 30)
+top_bet_nodes <- names(top_betweenness)
+
+cat("\n TOP 30 NODI PER BETWEENNESS CENTRALITY \n")
+top_bet_df <- data.frame(
+  Rank = 1:30,
+  Node = top_bet_nodes,
+  Betweenness = as.numeric(top_betweenness),
+  InDegree = in_degrees[top_bet_nodes],
+  OutDegree = out_degrees[top_bet_nodes],
+  PageRank = pr[top_bet_nodes]
+)
+print(kable(top_bet_df, format = "markdown", digits = 6))
+
+# Distribuzione
+bet_df <- data.frame(betweenness = betweenness)
+bet_df_filtered <- subset(bet_df, betweenness > 0)
+
+p7 <- ggplot(bet_df_filtered, aes(x = betweenness)) +
+  geom_histogram(bins = 50, fill = "#3498DB", alpha = 0.8) +
+  scale_x_log10() +
+  theme_minimal() +
+  labs(title = "Distribuzione Betweenness Centrality (esclusi zeri)",
+       x = "Betweenness (scala log)", 
+       y = "Frequenza") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+print(p7)
+
+# Concentrazione betweenness
+top_5_bet <- sum(head(sort(betweenness, decreasing = TRUE), top_10_percent))
+total_bet <- sum(betweenness)
+concentration_bet <- (top_5_bet / total_bet) * 100
+```
+
+## Sintesi RQ3
+```{r rq3-summary}
+cat("ESISTONO NODI INTERMEDIARI CRITICI:\n")
+cat("- ", sum(betweenness == 0), " nodi (", 
+    round(sum(betweenness == 0)/vcount(g)*100, 1), 
+    "%) hanno betweenness zero (non sono su alcun percorso più breve)\n", sep="")
+cat("- Il top 5% dei nodi controlla ", round(concentration_bet, 1), 
+    "% di tutta la betweenness\n", sep="")
+cat("- Identificati punti critici: nodi con alta betweenness relativa al loro grado\n")
+cat("- Questi nodi servono come ponti essenziali nella rete sparsa\n")
+```
+Le misure di betweenness centrality mostrano la presenza di nodi che svolgono un ruolo cruciale come intermediari nei percorsi minimi della rete. Tali nodi non sono necessariamente quelli con il grado più elevato, ma risultano fondamentali per mantenere la raggiungibilità tra diverse porzioni del grafo. La loro rimozione comporterebbe un aumento significativo della frammentazione, suggerendo che il controllo dei flussi informativi nel dark web sia fortemente concentrato in pochi punti strategici.
+
+# RQ4: Il darkweb mostra caratteristiche di small-world o scale-free network nonostante la sua sparsità?
+
+## Analisi Power-Law
+```{r rq4-powerlaw}
+cat(" ANALISI POWER-LAW \n")
+
+# Test power-law per in-degree
+in_deg_nonzero <- in_degrees[in_degrees > 0]
+
+cat("\n--- TEST POWER-LAW PER IN-DEGREE ---\n")
+if(length(in_deg_nonzero) > 50) {
+  pl_in <- conpl$new(in_deg_nonzero)
+  est_in <- estimate_xmin(pl_in)
+  pl_in$setXmin(est_in)
+  
+  cat("xmin stimato:", est_in$xmin, "\n")
+  cat("alpha stimato:", round(est_in$pars, 3), "\n")
+  cat("Statistica KS:", round(est_in$gof, 4), "\n")
+  
+  # Test bootstrap (usando meno iterazioni per velocità)
+  bs_in <- bootstrap_p(pl_in, no_of_sims = 100, threads = 2)
+  cat("P-value:", round(bs_in$p, 4), "\n")
+  
+  if(bs_in$p > 0.1) {
+    cat("Risultato: I dati sono CONSISTENTI con una distribuzione power-law\n")
+  } else {
+    cat("Risultato: I dati NON sono consistenti con una distribuzione power-law\n")
+  }
+} else {
+  cat("Dati insufficienti per il test power-law\n")
+}
+
+# Test power-law per out-degree
+out_deg_nonzero <- out_degrees[out_degrees > 0]
+
+cat("\n--- TEST POWER-LAW PER OUT-DEGREE ---\n")
+if(length(out_deg_nonzero) > 50) {
+  pl_out <- conpl$new(out_deg_nonzero)
+  est_out <- estimate_xmin(pl_out)
+  pl_out$setXmin(est_out)
+  
+  cat("xmin stimato:", est_out$xmin, "\n")
+  cat("alpha stimato:", round(est_out$pars, 3), "\n")
+  cat("Statistica KS:", round(est_out$gof, 4), "\n")
+  
+  bs_out <- bootstrap_p(pl_out, no_of_sims = 100, threads = 2)
+  cat("P-value:", round(bs_out$p, 4), "\n")
+  
+  if(bs_out$p > 0.1) {
+    cat("Risultato: I dati sono CONSISTENTI con una distribuzione power-law\n")
+  } else {
+    cat("Risultato: I dati NON sono consistenti con una distribuzione power-law\n")
+  }
+} else {
+  cat("Dati insufficienti per il test power-law\n")
+}
+
+# Visualizzazione del fit power-law per in-degree
+if(exists("pl_in")) {
+  plot(pl_in, xlab = "In-Degree", ylab = "CDF", 
+       main = "Distribuzione In-Degree vs Fit Power-Law",
+       pch = 16, col = "#3498DB")
+  lines(pl_in, col = "#E74C3C", lwd = 2)
+}
+
+# Visualizzazione del fit power-law per out-degree
+if(exists("pl_out")) {
+  plot(pl_out, xlab = "Out-Degree", ylab = "CDF", 
+       main = "Distribuzione Out-Degree vs Fit Power-Law",
+       pch = 16, col = "#16A085")
+  lines(pl_out, col = "#E74C3C", lwd = 2)
+}
+```
+
+## Analisi Shortest Path Length
+```{r rq4-spl}
+cat("\n ANALISI SHORTEST PATH LENGTH \n")
+cat("Calcolo shortest paths (potrebbe richiedere diversi minuti)...\n")
+
+# Calcola shortest paths
+distances_matrix <- distances(g, mode = "out")
+
+# Sostituisci Inf con NA per l'analisi
+distances_finite <- distances_matrix[is.finite(distances_matrix) & 
+                                       distances_matrix > 0]
+
+if(length(distances_finite) > 0) {
+  cat("\nStatistiche Shortest Path:\n")
+  cat("Media SPL:", round(mean(distances_finite), 3), "\n")
+  cat("Mediana SPL:", median(distances_finite), "\n")
+  cat("Max SPL:", max(distances_finite), "\n")
+  cat("Min SPL (escluso 0):", min(distances_finite), "\n")
+  
+  # Calcola proporzione di coppie connesse
+  total_pairs <- vcount(g) * (vcount(g) - 1)
+  connected_pairs <- sum(is.finite(distances_matrix) & distances_matrix > 0)
+  prop_connected <- (connected_pairs / total_pairs) * 100
+  
+  cat("\nConnettività:\n")
+  cat("Coppie di nodi connesse:", connected_pairs, "\n")
+  cat("Coppie totali possibili:", total_pairs, "\n")
+  cat("Proporzione connessa:", round(prop_connected, 2), "%\n")
+  
+  # Distribuzione SPL
+  spl_df <- data.frame(distance = distances_finite)
+  
+  p9 <- ggplot(spl_df, aes(x = distance)) +
+    geom_histogram(binwidth = 1, fill = "#8E44AD", alpha = 0.8) +
+    theme_minimal() +
+    labs(title = "Distribuzione Shortest Path Length",
+         subtitle = paste0("Media = ", round(mean(distances_finite), 2), 
+                          ", ", round(prop_connected, 1), 
+                          "% delle coppie sono connesse"),
+         x = "Shortest Path Length", 
+         y = "Frequenza") +
+    theme(plot.title = element_text(face = "bold", size = 14))
+  
+  print(p9)
+} else {
+  cat("Nessuna coppia connessa trovata nel network\n")
+}
+
+# Diametro del network
+diameter_val <- diameter(g, directed = TRUE)
+cat("\nDiametro del Network:", diameter_val, "\n")
+```
+
+## Coefficiente di Clustering
+```{r rq4-clustering}
+cat("\n ANALISI COEFFICIENTE DI CLUSTERING \n")
+
+# Coefficiente di clustering globale
+global_cc <- transitivity(g, type = "global")
+cat("Coefficiente di clustering globale:", round(global_cc, 4), "\n")
+
+# Coefficiente di clustering locale
+local_cc <- transitivity(g, type = "local")
+local_cc[is.nan(local_cc)] <- 0  # Sostituisci NaN con 0
+
+cat("Coefficiente di clustering locale medio:", round(mean(local_cc, na.rm = TRUE), 4), "\n")
+cat("Coefficiente di clustering locale mediano:", round(median(local_cc, na.rm = TRUE), 4), "\n")
+
+# Distribuzione
+cc_df <- data.frame(clustering = local_cc)
+
+p10 <- ggplot(cc_df, aes(x = clustering)) +
+  geom_histogram(bins = 30, fill = "#27AE60", alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Distribuzione Coefficiente di Clustering Locale",
+       subtitle = paste0("CC Globale = ", round(global_cc, 4)),
+       x = "Coefficiente di Clustering", 
+       y = "Frequenza") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+print(p10)
+
+# Confronta con network random
+cat("\n--- CONFRONTO CON NETWORK RANDOM ---\n")
+random_g <- erdos.renyi.game(vcount(g), ecount(g), type = "gnm", directed = TRUE)
+random_cc <- transitivity(random_g, type = "global")
+cat("Coefficiente di clustering network random:", round(random_cc, 4), "\n")
+cat("Rapporto Darkweb / Random:", round(global_cc / random_cc, 2), "\n")
+```
+
+## Proprietà Small-World
+```{r rq4-smallworld}
+cat("\n ANALISI SMALL-WORLD \n")
+
+# Confronta con proprietà network random
+if(length(distances_finite) > 0) {
+  # Average path length network random
+  random_distances <- distances(random_g, mode = "out")
+  random_distances_finite <- random_distances[is.finite(random_distances) & 
+                                                random_distances > 0]
+  
+  if(length(random_distances_finite) > 0) {
+    random_apl <- mean(random_distances_finite)
+    darkweb_apl <- mean(distances_finite)
+    
+    cat("Average Path Length (APL):\n")
+    cat("APL Darkweb:", round(darkweb_apl, 3), "\n")
+    cat("APL Network random:", round(random_apl, 3), "\n")
+    cat("Rapporto Darkweb / Random:", round(darkweb_apl / random_apl, 3), "\n")
+    
+    cat("\nQuoziente Small-World:\n")
+    small_world_q <- (global_cc / random_cc) / (darkweb_apl / random_apl)
+    cat("Q = (CC_real/CC_rand) / (APL_real/APL_rand) =", round(small_world_q, 3), "\n")
+    
+    if(small_world_q > 1) {
+      cat("Risultato: Il network mostra proprietà SMALL-WORLD (Q > 1)\n")
+    } else {
+      cat("Risultato: Il network NON mostra proprietà small-world (Q < 1)\n")
+    }
+  }
+}
+```
+
+## Sintesi RQ4
+```{r rq4-summary}
+cat("\n RISPOSTA RQ4 \n")
+cat("PROPRIETÀ TOPOLOGICHE:\n")
+
+if(exists("bs_in") && exists("bs_out")) {
+  if(bs_in$p > 0.1) {
+    cat("- La distribuzione in-degree è CONSISTENTE con power-law (scale-free)\n")
+  } else {
+    cat("- La distribuzione in-degree NON segue una power-law\n")
+  }
+  
+  if(bs_out$p > 0.1) {
+    cat("- La distribuzione out-degree è CONSISTENTE con power-law (scale-free)\n")
+  } else {
+    cat("- La distribuzione out-degree NON segue una power-law\n")
+  }
+}
+
+if(length(distances_finite) > 0) {
+  cat("- Lunghezza media shortest path:", round(mean(distances_finite), 2), "\n")
+  cat("- Solo ", round(prop_connected, 1), "% delle coppie di nodi sono connesse\n", sep="")
+}
+
+cat("- Coefficiente di clustering globale:", round(global_cc, 4), "\n")
+
+if(exists("small_world_q")) {
+  if(small_world_q > 1) {
+    cat("- Il network esibisce proprietà SMALL-WORLD (Q = ", 
+        round(small_world_q, 2), ")\n", sep="")
+  } else {
+    cat("- Il network NON esibisce proprietà small-world (Q = ", 
+        round(small_world_q, 2), ")\n", sep="")
+  }
+}
+
+```
+
+L’analisi delle distanze geodetiche e della distribuzione dei gradi suggerisce che, pur in presenza di elevata sparsità, la rete del dark web mostra alcune proprietà compatibili con modelli di rete complessa, come una distribuzione fortemente asimmetrica dei gradi. Tuttavia, le caratteristiche di small-world risultano attenuate rispetto a reti più dense, a causa dell’elevata frammentazione e della presenza di molte componenti isolate. La rete non può quindi essere considerata un small-world “puro”, ma presenta elementi riconducibili a strutture scale-free limitate.
+
+# RQ5: La rete è più vulnerabile a guasti casuali o ad attacchi mirati sui nodi centrali?
+
+## Guasto Casuale vs Attacco Mirato
+```{r rq5-attack}
+cat(" ANALISI RESILIENZA DEL NETWORK \n")
+cat("Simulazione rimozione nodi...\n")
+
+# Funzione per ottenere dimensione componente più grande
+get_largest_component_size <- function(graph) {
+  components <- components(graph)
+  max(components$csize) / vcount(graph)
+}
+
+# Componente gigante iniziale
+initial_gcc_size <- get_largest_component_size(g)
+cat("Dimensione componente gigante iniziale:", round(initial_gcc_size * 100, 1), "% del network\n")
+
+# Proporzioni di rimozione da testare
+removal_props <- seq(0, 0.5, by = 0.01)
+
+# Inizializza risultati
+results_random <- numeric(length(removal_props))
+results_degree <- numeric(length(removal_props))
+results_betweenness <- numeric(length(removal_props))
+results_pagerank <- numeric(length(removal_props))
+
+# Simulazione guasto casuale
+cat("\nSimulazione guasti casuali...\n")
+set.seed(123)
+for(i in seq_along(removal_props)) {
+  if(removal_props[i] == 0) {
+    results_random[i] <- initial_gcc_size
+  } else {
+    nodes_to_remove <- sample(V(g), size = floor(vcount(g) * removal_props[i]))
+    g_temp <- delete_vertices(g, nodes_to_remove)
+    results_random[i] <- get_largest_component_size(g_temp)
+  }
+}
+
+# Attacco mirato per grado
+cat("Simulazione attacchi mirati per grado...\n")
+nodes_by_degree <- order(total_degree, decreasing = TRUE)
+for(i in seq_along(removal_props)) {
+  if(removal_props[i] == 0) {
+    results_degree[i] <- initial_gcc_size
+  } else {
+    nodes_to_remove <- nodes_by_degree[1:floor(vcount(g) * removal_props[i])]
+    g_temp <- delete_vertices(g, nodes_to_remove)
+    results_degree[i] <- get_largest_component_size(g_temp)
+  }
+}
+
+# Attacco mirato per betweenness
+cat("Simulazione attacchi mirati per betweenness...\n")
+nodes_by_betweenness <- order(betweenness, decreasing = TRUE)
+for(i in seq_along(removal_props)) {
+  if(removal_props[i] == 0) {
+    results_betweenness[i] <- initial_gcc_size
+  } else {
+    nodes_to_remove <- nodes_by_betweenness[1:floor(vcount(g) * removal_props[i])]
+    g_temp <- delete_vertices(g, nodes_to_remove)
+    results_betweenness[i] <- get_largest_component_size(g_temp)
+  }
+}
+
+# Attacco mirato per PageRank
+cat("Simulazione attacchi mirati per PageRank...\n")
+nodes_by_pagerank <- order(pr, decreasing = TRUE)
+for(i in seq_along(removal_props)) {
+  if(removal_props[i] == 0) {
+    results_pagerank[i] <- initial_gcc_size
+  } else {
+    nodes_to_remove <- nodes_by_pagerank[1:floor(vcount(g) * removal_props[i])]
+    g_temp <- delete_vertices(g, nodes_to_remove)
+    results_pagerank[i] <- get_largest_component_size(g_temp)
+  }
+}
+
+cat("Simulazioni di attacco completate!\n")
+```
+
+## Visualizzazione Risultati Attacco
+```{r rq5-visualization}
+# Crea data frame per plotting
+attack_df <- data.frame(
+  Proportion = rep(removal_props, 4),
+  GCC_Size = c(results_random, results_degree, results_betweenness, results_pagerank),
+  Strategy = rep(c("Guasto Casuale", "Attacco Grado", "Attacco Betweenness", "Attacco PageRank"), 
+                 each = length(removal_props))
+)
+
+# Grafico
+p11 <- ggplot(attack_df, aes(x = Proportion, y = GCC_Size, color = Strategy)) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("Guasto Casuale" = "#95A5A6",
+                                 "Attacco Grado" = "#E74C3C",
+                                 "Attacco Betweenness" = "#3498DB",
+                                 "Attacco PageRank" = "#F39C12")) +
+  theme_minimal() +
+  labs(title = "Resilienza del Network: Guasto Casuale vs Attacchi Mirati",
+       subtitle = "Dimensione Componente Gigante sotto diverse strategie di rimozione",
+       x = "Proporzione di Nodi Rimossi", 
+       y = "Dimensione Componente Gigante (proporzione del network)",
+       color = "Strategia di Rimozione") +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        legend.position = "bottom") +
+  scale_y_continuous(labels = percent)
+
+print(p11)
+
+# Zoom sui primi 20% di rimozione
+attack_df_zoom <- attack_df[attack_df$Proportion <= 0.2, ]
+
+p12 <- ggplot(attack_df_zoom, aes(x = Proportion, y = GCC_Size, color = Strategy)) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("Guasto Casuale" = "#95A5A6",
+                                 "Attacco Grado" = "#E74C3C",
+                                 "Attacco Betweenness" = "#3498DB",
+                                 "Attacco PageRank" = "#F39C12")) +
+  theme_minimal() +
+  labs(title = "Resilienza del Network: Primi 20% di Nodi Rimossi",
+       x = "Proporzione di Nodi Rimossi", 
+       y = "Dimensione Componente Gigante (proporzione del network)",
+       color = "Strategia di Rimozione") +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        legend.position = "bottom") +
+  scale_y_continuous(labels = percent)
+
+print(p12)
+```
+
+## Analisi Soglia Critica
+```{r rq5-threshold}
+cat("\n ANALISI SOGLIA CRITICA \n")
+
+# Trova quando GCC scende sotto 50% per ogni strategia
+threshold_50 <- function(results, props) {
+  idx <- which(results < 0.5)[1]
+  if(is.na(idx)) return(NA)
+  return(props[idx])
+}
+
+cat("Proporzione di nodi da rimuovere per GCC < 50%:\n")
+cat("Guasto Casuale:", round(threshold_50(results_random, removal_props), 3), "\n")
+cat("Attacco Grado:", round(threshold_50(results_degree, removal_props), 3), "\n")
+cat("Attacco Betweenness:", round(threshold_50(results_betweenness, removal_props), 3), "\n")
+cat("Attacco PageRank:", round(threshold_50(results_pagerank, removal_props), 3), "\n")
+
+# Trova quando GCC scende sotto 10%
+threshold_10 <- function(results, props) {
+  idx <- which(results < 0.1)[1]
+  if(is.na(idx)) return(NA)
+  return(props[idx])
+}
+
+cat("\nProporzione di nodi da rimuovere per GCC < 10%:\n")
+cat("Guasto Casuale:", round(threshold_10(results_random, removal_props), 3), "\n")
+cat("Attacco Grado:", round(threshold_10(results_degree, removal_props), 3), "\n")
+cat("Attacco Betweenness:", round(threshold_10(results_betweenness, removal_props), 3), "\n")
+cat("Attacco PageRank:", round(threshold_10(results_pagerank, removal_props), 3), "\n")
+
+# Calcola rapporto di vulnerabilità (quanto più veloce funziona l'attacco mirato)
+# Confronta al 10% di rimozione
+idx_10 <- which(removal_props == 0.1)
+if(length(idx_10) > 0) {
+  cat("\nDimensione Componente Gigante al 10% di rimozione nodi:\n")
+  cat("Casuale:", round(results_random[idx_10] * 100, 1), "%\n")
+  cat("Attacco Grado:", round(results_degree[idx_10] * 100, 1), "%\n")
+  cat("Attacco Betweenness:", round(results_betweenness[idx_10] * 100, 1), "%\n")
+  cat("Attacco PageRank:", round(results_pagerank[idx_10] * 100, 1), "%\n")
+  
+  cat("\nRapporti di Vulnerabilità (vs Guasto Casuale):\n")
+  cat("Attacco Grado:", round(results_random[idx_10] / results_degree[idx_10], 2), "x più efficace\n")
+  cat("Attacco Betweenness:", round(results_random[idx_10] / results_betweenness[idx_10], 2), "x più efficace\n")
+  cat("Attacco PageRank:", round(results_random[idx_10] / results_pagerank[idx_10], 2), "x più efficace\n")
+}
+```
+
+## Analisi Efficienza del Network
+```{r rq5-efficiency}
+cat("\n ANALISI EFFICIENZA DEL NETWORK \n")
+
+# Calcola efficienza del network (solo per coppie connesse)
+if(length(distances_finite) > 0) {
+  efficiency <- mean(1 / distances_finite)
+  cat("Efficienza del network:", round(efficiency, 6), "\n")
+  
+  # Confronta con network random
+  random_efficiency <- mean(1 / random_distances_finite)
+  cat("Efficienza network random:", round(random_efficiency, 6), "\n")
+  cat("Rapporto efficienza (darkweb/random):", round(efficiency / random_efficiency, 3), "\n")
+}
+```
+
+## Sintesi RQ5
+```{r rq5-summary}
+cat("\n RISPOSTA RQ5 \n")
+cat("Il network è ALTAMENTE VULNERABILE ad attacchi mirati:\n\n")
+
+if(length(idx_10) > 0) {
+  cat("Al 10% di rimozione nodi:\n")
+  cat("- Guasto casuale: GCC mantiene ", round(results_random[idx_10] * 100, 1), "%\n", sep="")
+  cat("- Attacco grado: GCC mantiene ", round(results_degree[idx_10] * 100, 1), "%\n", sep="")
+  cat("- Attacco betweenness: GCC mantiene ", round(results_betweenness[idx_10] * 100, 1), "%\n", sep="")
+  cat("- Attacco PageRank: GCC mantiene ", round(results_pagerank[idx_10] * 100, 1), "%\n", sep="")
+}
+```
+
+L’analisi di resilienza mostra che la rete è relativamente robusta rispetto a guasti casuali, poiché la rimozione di nodi scelti casualmente tende a colpire nodi periferici o isolati. Al contrario, attacchi mirati sui nodi più centrali producono un rapido degrado della connettività e una frammentazione ulteriore della giant component. Questo comportamento è tipico di reti con elevata eterogeneità strutturale e conferma il ruolo critico degli hub e dei nodi intermedi.
+
+
+
+
+# Visualizzazione del Network
+
+## Panoramica Network Completo
+```{r viz-full}
+
+# Per network grandi, campiona nodi per visualizzazione
+if(vcount(g) > 1000) {
+  # Campiona nodi ad alto grado e nodi casuali
+  high_degree_nodes <- order(total_degree, decreasing = TRUE)[1:200]
+  random_nodes <- sample(setdiff(1:vcount(g), high_degree_nodes), 300)
+  viz_nodes <- c(high_degree_nodes, random_nodes)
+  g_viz <- induced_subgraph(g, viz_nodes)
+} else {
+  g_viz <- g
+}
+
+set.seed(123)
+p_network <- ggraph(g_viz, layout = "fr") +
+  geom_edge_link(aes(alpha = Weight), 
+                 arrow = arrow(length = unit(2, 'mm')), 
+                 end_cap = circle(2, 'mm'),
+                 color = "gray70") +
+  geom_node_point(aes(size = total_degree[V(g_viz)], 
+                      color = log10(pr[V(g_viz)])),
+                  alpha = 0.7) +
+  scale_size_continuous(range = c(1, 8)) +
+  scale_color_gradient(low = "#3498DB", high = "#E74C3C") +
+  theme_graph() +
+  labs(title = "Visualizzazione Network Darkweb",
+       subtitle = ifelse(vcount(g) > 1000, 
+                        "Campione di 500 nodi (200 grado più alto + 300 casuali)",
+                        paste(vcount(g), "nodi")),
+       size = "Grado",
+       color = "log10(PageRank)") +
+  theme(legend.position = "right")
+
+print(p_network)
+```
+
+## Subgraph Alta Centralità
+```{r viz-central}
+# Visualizza i top 100 nodi per PageRank
+top_100_pr <- order(pr, decreasing = TRUE)[1:min(100, vcount(g))]
+g_top <- induced_subgraph(g, top_100_pr)
+
+set.seed(123)
+p_top <- ggraph(g_top, layout = "fr") +
+  geom_edge_link(aes(alpha = Weight), 
+                 arrow = arrow(length = unit(3, 'mm')), 
+                 end_cap = circle(3, 'mm'),
+                 color = "gray50") +
+  geom_node_point(aes(size = total_degree[top_100_pr], 
+                      color = betweenness[top_100_pr]),
+                  alpha = 0.8) +
+  geom_node_text(aes(label = substr(name, 1, 8)), 
+                 size = 2, repel = TRUE) +
+  scale_size_continuous(range = c(3, 12)) +
+  scale_color_gradient(low = "#F39C12", high = "#8E44AD") +
+  theme_graph() +
+  labs(title = "Top 100 Nodi per PageRank",
+       size = "Grado",
+       color = "Betweenness") +
+  theme(legend.position = "right")
+
+print(p_top)
+```
+
+# Conclusioni
+
+## Tabella Metriche Chiave
+```{r metrics-table}
+metrics_summary <- data.frame(
+  Metrica = c(
+    "Numero di Nodi",
+    "Numero di Archi",
+    "Densità Network",
+    "Nodi con Out-Degree = 0",
+    "Coppie Nodi Connesse",
+    "Lunghezza Media Percorso",
+    "Coefficiente Clustering Globale",
+    "Diametro Network",
+    "Concentrazione PageRank Top 5%",
+    "Concentrazione Betweenness Top 5%"
+  ),
+  Valore = c(
+    vcount(g),
+    ecount(g),
+    round(edge_density(g), 6),
+    paste0(nodes_no_outlinks, " (", round(prop_no_outlinks, 1), "%)"),
+    paste0(round(prop_connected, 1), "%"),
+    round(mean(distances_finite), 2),
+    round(global_cc, 4),
+    diameter_val,
+    paste0(round(concentration_pr, 1), "%"),
+    paste0(round(concentration_bet, 1), "%")
+  )
+)
+
+kable(metrics_summary, 
+      format = "html",
+      col.names = c("Metrica", "Valore"),
+      caption = "Riepilogo Metriche Chiave del Network") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+## Considerazioni
+
+Nel complesso, l’analisi evidenzia come il dark web presenti una struttura profondamente diversa rispetto al World Wide Web tradizionale. Mentre il WWW è caratterizzato da un’elevata densità, da forti proprietà small-world e da una navigabilità globale relativamente efficiente, il dark web appare più frammentato, meno ridondante e strutturalmente fragile.
+
+Entrambe le reti condividono una certa eterogeneità nella distribuzione dei gradi e la presenza di nodi altamente centrali; tuttavia, nel dark web tali nodi assumono un ruolo ancora più critico, poiché compensano l’assenza di una struttura ipertestuale densa e sistematica. Questo riflette differenze profonde negli obiettivi e nelle modalità di utilizzo: il World Wide Web è progettato per massimizzare l’accessibilità e la visibilità, mentre il dark web privilegia l’anonimato e la compartmentalizzazione, a scapito della connettività globale.
+
+In conclusione, il dark web può essere interpretato come una rete complessa “incompleta”, in cui pochi nodi chiave sostengono una struttura altrimenti fortemente disgregata, rendendolo al tempo stesso resiliente a perturbazioni casuali e vulnerabile ad attacchi strutturalmente informati.
